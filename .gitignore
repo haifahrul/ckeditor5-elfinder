@@ -1,0 +1,4 @@
+node_modules/
+package-lock.json
+vendor/elFinder/php/vendor
+vendor/elFinder/php/connector.minimal.php
