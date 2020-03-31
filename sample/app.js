@@ -1,228 +1,189 @@
-function elFinderInit(){
+// elfinder folder hash of the destination folder to be uploaded in this CKeditor 5
+const uploadTargetHash = 'l1_Lw';
 
-  var elfNode, elfInstance, dialogName,
-    elfUrl = '../vendor/elFinder/php/connector.minimal.php', // Your connector's URL
-    elfDirHashMap = { // Dialog name / elFinder holder hash Map
-      image : '',
-      flash : '',
-      files : '',
-      link  : '',
-      fb    : 'l1_Lw' // Fall back target : `/`
-    },
-    imgShowMaxSize = 40000; // Max image size(px) to show
+// elFinder connector URL
+const connectorUrl = '../vendor/elFinder/php/connector.minimal.php';
 
-  // Set image size to show
-  function setShowImgSize(url, callback) {
-    $('<img/>').attr('src', url).on('load', function() {
-      var w = this.naturalWidth,
-        h = this.naturalHeight,
-        s = imgShowMaxSize;
-      if (w > s || h > s) {
-        if (w > h) {
-          h = Math.floor(h * (s / w));
-          w = s;
-        } else {
-          w = Math.floor(w * (s / h));
-          h = s;
+// To create CKEditor 5 classic editor
+ClassicEditor
+    .create(document.querySelector('#editor') , {
+        // Custom your toolbar
+        toolbar: ['heading', '|', 'bold', 'italic', 'link', 'bulletedList', 'numberedList', 'imageUpload', 'ckfinder', 'blockQuote', 'insertTable', 'mediaEmbed', 'undo', 'redo'],
+    } )
+    .then(editor => {
+        const ckf = editor.commands.get('ckfinder'),
+            fileRepo = editor.plugins.get('FileRepository'),
+            ntf = editor.plugins.get('Notification'),
+            i18 = editor.locale.t,
+            // Insert images to editor window
+            insertImages = urls => {
+                const imgCmd = editor.commands.get('imageUpload');
+                if (!imgCmd.isEnabled) {
+                    ntf.showWarning(i18('Could not insert image at the current position.'), {
+                        title: i18('Inserting image failed'),
+                        namespace: 'ckfinder'
+                    });
+                    return;
+                }
+                editor.execute('imageInsert', { source: urls });
+            },
+            // To get elFinder instance
+            getfm = open => {
+                return new Promise((resolve, reject) => {
+                    // Execute when the elFinder instance is created
+                    const done = () => {
+                        if (open) {
+                            // request to open folder specify
+                            if (!Object.keys(_fm.files()).length) {
+                                // when initial request
+                                _fm.one('open', () => {
+                                    _fm.file(open)? resolve(_fm) : reject(_fm, 'errFolderNotFound');
+                                });
+                            } else {
+                                // elFinder has already been initialized
+                                new Promise((res, rej) => {
+                                    if (_fm.file(open)) {
+                                        res();
+                                    } else {
+                                        // To acquire target folder information
+                                        _fm.request({cmd: 'parents', target: open}).done(e =>{
+                                            _fm.file(open)? res() : rej();
+                                        }).fail(() => {
+                                            rej();
+                                        });
+                                    }
+                                }).then(() => {
+                                    // Open folder after folder information is acquired
+                                    _fm.exec('open', open).done(() => {
+                                        resolve(_fm);
+                                    }).fail(err => {
+                                        reject(_fm, err? err : 'errFolderNotFound');
+                                    });
+                                }).catch((err) => {
+                                    reject(_fm, err? err : 'errFolderNotFound');
+                                });
+                            }
+                        } else {
+                            // show elFinder manager only
+                            resolve(_fm);
+                        }
+                    };
+
+                    // Check elFinder instance
+                    if (_fm) {
+                        // elFinder instance has already been created
+                        done();
+                    } else {
+                        // To create elFinder instance
+                        _fm = $('<div/>').dialogelfinder({
+                            // dialog title
+                            title : 'File Manager',
+                            // connector URL
+                            url : connectorUrl,
+                            // start folder setting
+                            startPathHash : open? open : void(0),
+                            // Set to do not use browser history to un-use location.hash
+                            useBrowserHistory : false,
+                            // Disable auto open
+                            autoOpen : false,
+                            // elFinder dialog width
+                            width : '80%',
+                            // set getfile command options
+                            commandsOptions : {
+                                getfile: {
+                                    oncomplete : 'close',
+                                    multiple : true
+                                }
+                            },
+                            // Insert in CKEditor when choosing files
+                            getFileCallback : (files, fm) => {
+                                let imgs = [];
+                                fm.getUI('cwd').trigger('unselectall');
+                                $.each(files, function(i, f) {
+                                    if (f && f.mime.match(/^image\//i)) {
+                                        imgs.push(fm.convAbsUrl(f.url));
+                                    } else {
+                                        editor.execute('link', fm.convAbsUrl(f.url));
+                                    }
+                                });
+                                if (imgs.length) {
+                                    insertImages(imgs);
+                                }
+                            }
+                        }).elfinder('instance');
+                        done();
+                    }
+                });
+            };
+
+        // elFinder instance
+        let _fm;
+
+        if (ckf) {
+            // Take over ckfinder execute()
+            ckf.execute = () => {
+                getfm().then(fm => {
+                    fm.getUI().dialogelfinder('open');
+                });
+            };
         }
-      }
-      callback({width: w, height: h});
+
+        // Make uploader
+        const uploder = function(loader) {
+            let upload = function(file, resolve, reject) {
+                getfm(uploadTargetHash).then(fm => {
+                    let fmNode = fm.getUI();
+                    fmNode.dialogelfinder('open');
+                    fm.exec('upload', {files: [file], target: uploadTargetHash}, void(0), uploadTargetHash)
+                        .done(data => {
+                            if (data.added && data.added.length) {
+                                fm.url(data.added[0].hash, { async: true }).done(function(url) {
+                                    resolve({
+                                        'default': fm.convAbsUrl(url)
+                                    });
+                                    fmNode.dialogelfinder('close');
+                                }).fail(function() {
+                                    reject('errFileNotFound');
+                                });
+                            } else {
+                                reject(fm.i18n(data.error? data.error : 'errUpload'));
+                                fmNode.dialogelfinder('close');
+                            }
+                        })
+                        .fail(err => {
+                            const error = fm.parseError(err);
+                            reject(fm.i18n(error? (error === 'userabort'? 'errAbort' : error) : 'errUploadNoFiles'));
+                        });
+                }).catch((fm, err) => {
+                    const error = fm.parseError(err);
+                    reject(fm.i18n(error? (error === 'userabort'? 'errAbort' : error) : 'errUploadNoFiles'));
+                });
+            };
+
+            this.upload = function() {
+                return new Promise(function(resolve, reject) {
+                    if (loader.file instanceof Promise || (loader.file && typeof loader.file.then === 'function')) {
+                        loader.file.then(function(file) {
+                            upload(file, resolve, reject);
+                        });
+                    } else {
+                        upload(loader.file, resolve, reject);
+                    }
+                });
+            };
+            this.abort = function() {
+                _fm && _fm.getUI().trigger('uploadabort');
+            };
+        };
+
+        // Set up image uploader
+        fileRepo.createUploadAdapter = loader => {
+            return new uploder(loader);
+        };
+    })
+    .catch(error => {
+        console.error( error );
     });
-  }
-
-  // Set values to dialog of CKEditor
-  function setDialogValue(file, fm) {
-    var url = fm.convAbsUrl(file.url),
-      dialog = CKEDITOR.dialog.getCurrent(),
-      dialogName = dialog._.name,
-      tabName = dialog._.currentTabId,
-      urlObj;
-    if (dialogName === 'image') {
-      urlObj = 'txtUrl';
-    } else if (dialogName === 'flash') {
-      urlObj = 'src';
-    } else if (dialogName === 'files' || dialogName === 'link') {
-      urlObj = 'url';
-    } else if (dialogName === 'image2') {
-      urlObj = 'src';
-    } else {
-      return;
-    }
-    if (tabName === 'Upload') {
-      tabName = 'info';
-      dialog.selectPage(tabName);
-    }
-    dialog.setValueOf(tabName, urlObj, url);
-    if (dialogName === 'image' && tabName === 'info') {
-      setShowImgSize(url, function(size) {
-        dialog.setValueOf('info', 'txtWidth', size.width);
-        dialog.setValueOf('info', 'txtHeight', size.height);
-        dialog.preview.$.style.width = size.width+'px';
-        dialog.preview.$.style.height = size.height+'px';
-        dialog.setValueOf('Link', 'txtUrl', url);
-        dialog.setValueOf('Link', 'cmbTarget', '_blank');
-      });
-    } else if (dialogName === 'image2' && tabName === 'info') {
-      dialog.setValueOf(tabName, 'alt', file.name + ' (' + elfInstance.formatSize(file.size) + ')');
-      setShowImgSize(url, function(size) {
-        setTimeout(function() {
-          dialog.setValueOf('info', 'width', size.width);
-          dialog.setValueOf('info', 'height', size.height);
-        }, 100);
-      });
-    } else if (dialogName === 'files' || dialogName === 'link') {
-      try {
-        dialog.setValueOf('info', 'linkDisplayText', file.name);
-      } catch(e) {}
-    }
-  }
-
-  // Setup upload tab in CKEditor dialog
-  CKEDITOR.on('dialogDefinition', function (event) {
-    var dialogName = event.data.name,
-      dialogDefinition = event.data.definition,
-      tabCount = dialogDefinition.contents.length,
-      browseButton;
-
-    if ( dialogName == 'image2' || dialogName == 'link' ) {
-      // Remove upload tab
-      dialogDefinition.removeContents('Upload');
-      dialogDefinition.removeContents('upload');
-    }
-
-    for (var i = 0; i < tabCount; i++) {
-      try {
-        browseButton = dialogDefinition.contents[i].get('browse');
-      } catch(e) {
-        browseButton = null;
-      }
-
-      if (browseButton !== null) {
-        browseButton.hidden = false;
-        browseButton.onClick = function (dialog, i) {
-          dialogName = CKEDITOR.dialog.getCurrent()._.name;
-          if (dialogName === 'image2') {
-            dialogName = 'image';
-          }
-          if (elfNode) {
-            if (elfDirHashMap[dialogName] && elfDirHashMap[dialogName] !== elfInstance.cwd().hash) {
-              elfInstance.request({
-                data     : {cmd  : 'open', target : elfDirHashMap[dialogName]},
-                notify : {type : 'open', cnt : 1, hideCnt : true},
-                syncOnFail : true
-              });
-            }
-            elfNode.dialog('open');
-          }
-        }
-      }
-    }
-  });
-
-  // Create elFinder dialog for CKEditor
-  CKEDITOR.on('instanceReady', function(e) {
-    elfNode = $('<div style="padding:0;">');
-    elfNode.dialog({
-      autoOpen: false,
-      modal: true,
-      width: '80%',
-      title: 'Server File Manager',
-      create: function (event, ui) {
-        var startPathHash = (elfDirHashMap[dialogName] && elfDirHashMap[dialogName])? elfDirHashMap[dialogName] : '';
-        // elFinder configure
-        elfInstance = $(this).elfinder({
-          startPathHash: startPathHash,
-          useBrowserHistory: false,
-          resizable: false,
-          width: '100%',
-          url: elfUrl,
-          lang: 'en',
-          dialogContained : true,
-          getFileCallback: function(file, fm) {
-            setDialogValue(file, fm);
-            elfNode.dialog('close');
-          }
-        }).elfinder('instance');
-      },
-      open: function() {
-        elfNode.find('div.elfinder-toolbar input').blur();
-        setTimeout(function(){
-          elfInstance.enable();
-        }, 100);
-      },
-      resizeStop: function() {
-        elfNode.trigger('resize');
-      }
-    }).parent().css({'zIndex':'11000'});
-
-    // CKEditor instance
-    var cke = e.editor;
-
-    // Setup the procedure when DnD image upload was completed
-    cke.widgets.registered.uploadimage.onUploaded = function(upload){
-      var self = this;
-      setShowImgSize(upload.url, function(size) {
-        self.replaceWith('<img src="'+encodeURI(upload.url)+'" width="'+size.width+'" height="'+size.height+'"></img>');
-      });
-    };
-
-    // Setup the procedure when send DnD image upload data to elFinder's connector
-    cke.on('fileUploadRequest', function(e){
-      var target = elfDirHashMap['image']? elfDirHashMap['image'] : elfDirHashMap['fb'],
-        fileLoader = e.data.fileLoader,
-        xhr = fileLoader.xhr,
-        formData = new FormData();
-      e.stop();
-      xhr.open('POST', fileLoader.uploadUrl, true);
-      formData.append('cmd', 'upload');
-      formData.append('target', target);
-      formData.append('upload[]', fileLoader.file, fileLoader.fileName);
-      xhr.send(formData);
-    }, null, null, 4);
-
-    // Setup the procedure when got DnD image upload response
-    cke.on('fileUploadResponse', function(e){
-      var file;
-      e.stop();
-      var data = e.data,
-        res = JSON.parse(data.fileLoader.xhr.responseText);
-      if (!res.added || res.added.length < 1) {
-        data.message = 'Can not upload.';
-        e.cancel();
-      } else {
-        elfInstance.exec('reload');
-        file = res.added[0];
-        if (file.url && file.url !== '1') {
-          data.url = file.url;
-          try {
-            data.url = decodeURIComponent(data.url);
-          } catch(e) {}
-        } else {
-          data.url = elfInstance.options.url + ((elfInstance.options.url.indexOf('?') === -1)? '?' : '&') + 'cmd=file&target=' + file.hash;
-        }
-        data.url = elfInstance.convAbsUrl(data.url);
-      }
-    });
-  });
-
-}
-
-// elFinderInit();
-
-// CKEDITOR.replace('s3-adapter',{
-//   filebrowserBrowseUrl: '#',
-//   extraPlugins: 'uploadimage,image2',
-//   filebrowserUploadUrl: './elFinder/php/connector.minimal.php',
-//   imageUploadUrl: './elFinder/php/connector.minimal.php'
-// });
-
-ClassicEditor.create( document.querySelector( '#editor' ) )
-		.then( editor => {
-			window.editor = editor;
-		} )
-		.catch( error => {
-			console.error( 'There was a problem initializing the editor.', error );
-		} );
 
 
 $('.loading').hide();
